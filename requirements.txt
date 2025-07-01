@@ -1,0 +1,7 @@
+gradio[mcp]==5.35.0
+fastapi
+uvicorn
+huggingface_hub
+pillow
+python-dotenv
+numpy
