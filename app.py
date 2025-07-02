@@ -9,12 +9,14 @@ from datetime import datetime
 from modules.build_openbadge_metadata import build_openbadge_metadata
 from modules.add_openbadge_metadata import add_openbadge_metadata
 from modules.storage import upload_files_to_repo, _get_json_from_repo, _upload_json_to_repo, _get_files_from_repo
-from modules.constants import HF_REPO_ID, HF_API_TOKEN, SPACE_NAME
+from modules.constants import HF_REPO_ID, HF_API_TOKEN, SPACE_NAME, TMPDIR
 from modules.version_info import versions_html
+from modules.file_utils import download_and_save_image
 from PIL import Image
 import io
 import base64
 import shutil
+from pathlib import Path
 
 # Create FastAPI app
 app = FastAPI()
@@ -239,12 +241,16 @@ async def get_badge_metadata(guid: str):
 @app.get("/badge/{guid}/image")
 async def get_badge_image(guid: str):
     """Redirect to the badge image"""
-    badge_data = badge_manager.get_badge_img(guid)
+    # Construct the direct URL to the badge image using the correct format
+    badge_image_url = f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/badges/{guid}/badge.png"
+    
+    # Verify the badge exists by checking if we can get its metadata
+    badge_data = badge_manager.get_badge(guid)
     if not badge_data:
         raise HTTPException(status_code=404, detail="Badge not found")
     
     from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=badge_data["badge_url"])
+    return RedirectResponse(url=badge_image_url)
 
 # Gradio Interface Functions
 def create_new_badge(recipient_name, recipient_email, achievement_name, 
@@ -298,8 +304,9 @@ def lookup_badge_by_guid(guid):
 **Badge Image:** {badge_data['badge_url']}
     """
     
-    # Return the badge image URL for display
-    badge_image_path = get_badge_image(guid.strip())
+    # Return the badge image URL for display - use the URL from badge_data
+    badge_image_url = badge_data['badge_url']
+    badge_image_path =  download_and_save_image(badge_image_url, Path(TMPDIR), HF_API_TOKEN)
     
     return info_msg, badge_data['lookup_url'], badge_data['metadata'], badge_image_path
 
@@ -429,4 +436,4 @@ Badges are stored in the Hugging Face dataset: `{HF_REPO_ID}`
 demo.app = app
 
 if __name__ == "__main__":
-    demo.launch(mcp_server=True,favicon_path="favicon.ico", share=True)
+    demo.launch(mcp_server=True,favicon_path="favicon.ico", share=True, allowed_paths=[Path(TMPDIR)]  )
