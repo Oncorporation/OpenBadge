@@ -187,3 +187,18 @@ def download_and_save_file(url: str, dst_folder: Path, token: str = None) -> Pat
         f.write(response.content)
     
     return dst
+
+
+if __name__ == "__main__":
+    # Example usage
+    url = "https://example.com/image.png"
+    dst_folder = Path("downloads")
+    download_and_save_image(url, dst_folder)
+    # Example usage for file download
+    file_url = "https://example.com/file.mp3"
+    downloaded_file = download_and_save_file(file_url, dst_folder)
+    print(f"File downloaded to: {downloaded_file}")
+    # Example usage for renaming file extension
+    file_path = "example.TXT"
+    new_file_path = rename_file_to_lowercase_extension(file_path)
+    print(f"Renamed file to: {new_file_path}")

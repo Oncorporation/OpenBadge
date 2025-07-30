@@ -317,3 +317,14 @@ SAMPLE_ACHIEVEMENT = {
         "narrative": "Student must build and demonstrate a functional robot that can complete basic navigation tasks"
     }
 }
+
+if __name__ == "__main__":
+    # Example usage
+    credential = create_complete_signed_credential(
+        credential_id="urn:uuid:12345678-1234-5678-1234-567812345678",
+        subject_id="did:example:subject123",
+        issuer=SAMPLE_ISSUER,
+        achievement=SAMPLE_ACHIEVEMENT,
+        issuer_key_id=generate_key_id(SAMPLE_ISSUER["id"], 1)
+    )
+    print(json.dumps(credential, indent=2))

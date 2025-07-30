@@ -143,3 +143,7 @@ def versions_html():
         del torch_version_
     
     return v_html
+
+if __name__ == "__main__":
+    print(versions_html())
+    release_torch_resources()

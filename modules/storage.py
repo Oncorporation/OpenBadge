@@ -633,3 +633,19 @@ def list_issuer_ids(repo_id: str = None) -> List[str]:
     except Exception as e:
         print(f"Error listing issuer IDs: {e}")
         return []
+
+
+    if __name__ == "__main__":
+       issuer_id = "https://example.edu/issuers/565049"
+       # Example usage
+       public_key, private_key = get_issuer_keypair(issuer_id)
+       print(f"Public Key: {public_key}")
+       print(f"Private Key: {private_key}")
+
+       # Example to store keys
+       store_issuer_keypair(issuer_id, public_key, private_key)
+
+       # Example to list issuer IDs
+       issuer_ids = list_issuer_ids()
+
+       print(f"Issuer IDs: {issuer_ids}")
