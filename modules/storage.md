@@ -1,4 +1,4 @@
-# Storage Module (`modules/storage.py`) Usage Guide
+﻿# Storage Module (`modules/storage.py`) Usage Guide
 
 The `storage.py` module provides helper functions for:
 - Generating permalinks for 3D viewer projects.
@@ -6,6 +6,7 @@ The `storage.py` module provides helper functions for:
 - Managing URL shortening by storing (short URL, full URL) pairs in a JSON file on the repository.
 - Retrieving full URLs from short URL IDs and vice versa.
 - Handle specific file types for 3D models, images, video and audio.
+- **🔑 Cryptographic key management for Open Badge 3.0 issuers.**
 
 ## Key Functions
 
@@ -38,13 +39,11 @@ print("Generated Permalink:", permalink)
 - **Purpose:**  
   Uploads a batch of files (each file represented as a path string) to a specified Hugging Face repository (e.g. `"Surn/Storage"`) under a given folder.
   The function's return type is `Union[Dict[str, Any], List[Tuple[Any, str]]]`.
-  - When `create_permalink` is `True` and exactly three valid files (one model and two images) are provided, the function returns a dictionary:```
-{
+  - When `create_permalink` is `True` and exactly three valid files (one model and two images) are provided, the function returns a dictionary:{
     "response": <upload_folder_response>,
     "permalink": "<full_permalink_url>",
     "short_permalink": "<shortened_permalink_url_with_sid>"
-}
-```  - Otherwise (or if `create_permalink` is `False` or conditions for permalink creation are not met), it returns a list of tuples, where each tuple is `(upload_folder_response, individual_file_link)`.
+}  - Otherwise (or if `create_permalink` is `False` or conditions for permalink creation are not met), it returns a list of tuples, where each tuple is `(upload_folder_response, individual_file_link)`.
   - If no valid files are provided, it returns an empty list `[]` (this case should ideally also return the dictionary with empty/None values for consistency, but currently returns `[]` as per the code).
 - **Usage Example:**
 
@@ -143,14 +142,86 @@ status, retrieved_full_url = gen_full_url(
 print("Status:", status)
 if status == "success_retrieved_full":
     print("Retrieved Full URL:", retrieved_full_url)
+## 🔑 Cryptographic Key Management Functions
+
+### 5. `store_issuer_keypair(issuer_id, public_key, private_key, repo_id=None)`
+- **Purpose:**  
+  Securely store cryptographic keys for an issuer in a private Hugging Face repository. Private keys are encrypted before storage.
+- **⚠️ IMPORTANT:** This function requires a PRIVATE Hugging Face repository to ensure the security of stored private keys. Never use this with public repositories.
+- **Storage Structure:**keys/issuers/{issuer_id}/
+├── private_key.json (encrypted)
+└── public_key.json- **Returns:** `bool` - True if keys were stored successfully, False otherwise.
+- **Usage Example:**from modules.storage import store_issuer_keypair
+
+# Example Ed25519 keys (multibase encoded)
+issuer_id = "https://example.edu/issuers/565049"
+public_key = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+private_key = "z3u2MQhLnQw7nvJRGJCdKdqfXHV4N7BLKuEGFWnJqsVSdgYv"
+
+success = store_issuer_keypair(issuer_id, public_key, private_key)
+if success:
+    print("Keys stored successfully")
+else:
+    print("Failed to store keys")
+### 6. `get_issuer_keypair(issuer_id, repo_id=None)`
+- **Purpose:**  
+  Retrieve and decrypt stored cryptographic keys for an issuer from the private Hugging Face repository.
+- **⚠️ IMPORTANT:** This function accesses a PRIVATE Hugging Face repository containing encrypted private keys. Ensure proper access control and security measures.
+- **Returns:** `Tuple[Optional[str], Optional[str]]` - (public_key, private_key) or (None, None) if not found.
+- **Usage Example:**from modules.storage import get_issuer_keypair
+
+issuer_id = "https://example.edu/issuers/565049"
+public_key, private_key = get_issuer_keypair(issuer_id)
+
+if public_key and private_key:
+    print("Keys retrieved successfully")
+    print(f"Public key: {public_key}")
+    # Use private_key for signing operations
+else:
+    print("Keys not found or error occurred")
+### 7. `get_verification_methods_registry(repo_id=None)`
+- **Purpose:**  
+  Retrieve the global verification methods registry containing all registered issuer public keys.
+- **Returns:** `Dict[str, Any]` - Registry data containing all verification methods.
+- **Usage Example:**from modules.storage import get_verification_methods_registry
+
+registry = get_verification_methods_registry()
+methods = registry.get("verification_methods", [])
+
+for method in methods:
+    print(f"Issuer: {method['issuer_id']}")
+    print(f"Public Key: {method['public_key']}")
+    print(f"Key Type: {method['key_type']}")
+    print("---")
+### 8. `list_issuer_ids(repo_id=None)`
+- **Purpose:**  
+  List all issuer IDs that have stored keys in the repository.
+- **Returns:** `List[str]` - List of issuer IDs.
+- **Usage Example:**from modules.storage import list_issuer_ids
+
+issuer_ids = list_issuer_ids()
+print("Registered issuers:")
+for issuer_id in issuer_ids:
+    print(f"  - {issuer_id}")
 ## Notes
 - **Authentication:** All functions that interact with Hugging Face Hub use the HF API token defined as `HF_API_TOKEN` in `modules/constants.py`. Ensure this environment variable is correctly set.
 - **Constants:** Functions like `gen_full_url` and `upload_files_to_repo` (when creating short links) rely on `HF_REPO_ID` and `SHORTENER_JSON_FILE` from `modules/constants.py` for the URL shortening feature.
+- **🔐 Private Repository Requirement:** Key management functions require a PRIVATE Hugging Face repository to ensure the security of stored encrypted private keys. Never use these functions with public repositories.
 - **File Types:** Only files with extensions included in `upload_file_types` (a combination of `model_extensions` and `image_extensions` from `modules/constants.py`) are processed by `upload_files_to_repo`.
-- **Repository Configuration:** When using URL shortening and file uploads, ensure that the specified Hugging Face repository (e.g., defined by `HF_REPO_ID`) exists and that you have write permissions.
+- **Repository Configuration:** When using URL shortening, file uploads, and key management, ensure that the specified Hugging Face repository (e.g., defined by `HF_REPO_ID`) exists and that you have write permissions.
 - **Temporary Directory:** `upload_files_to_repo` temporarily copies files to a local directory (configured by `TMPDIR` in `modules/constants.py`) before uploading.
+- **Key Encryption:** Private keys are encrypted using basic XOR encryption (demo implementation). In production environments, upgrade to proper encryption like Fernet from the cryptography library.
 - **Error Handling:** Functions include basic error handling (e.g., catching `RepositoryNotFoundError`, `EntryNotFoundError`, JSON decoding errors, or upload issues) and print messages to the console for debugging. Review function return values to handle these cases appropriately in your application.
+
+## 🔒 Security Considerations for Key Management
+
+1. **Private Repository Only:** Always use private repositories for key storage to protect cryptographic material.
+2. **Key Sanitization:** Issuer IDs are sanitized for file system compatibility (replacing special characters with underscores).
+3. **Encryption:** Private keys are encrypted before storage. Upgrade to Fernet encryption in production.
+4. **Access Control:** Implement proper authentication and authorization for key access.
+5. **Key Rotation:** Consider implementing key rotation mechanisms for enhanced security.
+6. **Audit Logging:** Monitor key access and usage patterns for security auditing.
 
 ---
 
-This guide provides the essential usage examples for interacting with the storage and URL-shortening functionality. You can integrate these examples into your application or use them as a reference when extending functionality.
+This guide provides the essential usage examples for interacting with the storage, URL-shortening, and cryptographic key management functionality. You can integrate these examples into your application or use them as a reference when extending functionality.

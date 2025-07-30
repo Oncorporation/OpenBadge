@@ -1,15 +1,16 @@
-# modules/storage.py
-__version__ = "0.1.2"
+﻿# modules/storage.py
+__version__ = "0.1.3"
 import os
 import urllib.parse
 import tempfile
 import shutil
 import json
 import base64
+from datetime import datetime, timezone
 from huggingface_hub import login, upload_folder, hf_hub_download, HfApi
 from huggingface_hub.utils import RepositoryNotFoundError, EntryNotFoundError
 from modules.constants import HF_API_TOKEN, upload_file_types, model_extensions, image_extensions, audio_extensions, video_extensions, doc_extensions, HF_REPO_ID, SHORTENER_JSON_FILE
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union, Optional
 
 # see storage.md for detailed information about the storage module and its functions.
 
@@ -357,3 +358,278 @@ def gen_full_url(short_url=None, full_url=None, repo_id=None, repo_type="dataset
             return "error_upload", None
                 
     return "error_unhandled_case", None # Should not be reached
+
+def _encrypt_private_key(private_key: str, password: str = None) -> str:
+    """
+    Basic encryption for private keys. In production, use proper encryption like Fernet.
+    
+    Note: This is a simplified encryption for demonstration. In production environments,
+    use proper encryption libraries like cryptography.fernet.Fernet with secure key derivation.
+    
+    Args:
+        private_key (str): The private key to encrypt
+        password (str, optional): Password for encryption. If None, uses a default method.
+    
+    Returns:
+        str: Base64 encoded encrypted private key
+    """
+    # WARNING: This is a basic XOR encryption for demo purposes only
+    # In production, use proper encryption like Fernet from cryptography library
+    if not password:
+        password = "default_encryption_key"  # In production, use secure key derivation
+    
+    encrypted_bytes = []
+    for i, char in enumerate(private_key):
+        encrypted_bytes.append(ord(char) ^ ord(password[i % len(password)]))
+    
+    encrypted_data = bytes(encrypted_bytes)
+    return base64.b64encode(encrypted_data).decode('utf-8')
+
+def _decrypt_private_key(encrypted_private_key: str, password: str = None) -> str:
+    """
+    Basic decryption for private keys. In production, use proper decryption like Fernet.
+    
+    Args:
+        encrypted_private_key (str): Base64 encoded encrypted private key
+        password (str, optional): Password for decryption. If None, uses a default method.
+    
+    Returns:
+        str: Decrypted private key
+    """
+    # WARNING: This is a basic XOR decryption for demo purposes only
+    if not password:
+        password = "default_encryption_key"  # In production, use secure key derivation
+    
+    encrypted_data = base64.b64decode(encrypted_private_key)
+    decrypted_chars = []
+    for i, byte in enumerate(encrypted_data):
+        decrypted_chars.append(chr(byte ^ ord(password[i % len(password)])))
+    
+    return ''.join(decrypted_chars)
+
+def store_issuer_keypair(issuer_id: str, public_key: str, private_key: str, repo_id: str = None) -> bool:
+    """
+    Store cryptographic keys for an issuer in the private Hugging Face repository.
+    
+    **IMPORTANT: This function requires a PRIVATE Hugging Face repository to ensure
+    the security of stored private keys. Never use this with public repositories.**
+    
+    The keys are stored in the following structure:
+    keys/issuers/{issuer_id}/
+    ├── private_key.json (encrypted)
+    └── public_key.json
+    
+    Args:
+        issuer_id (str): Unique identifier for the issuer (e.g., "https://example.edu/issuers/565049")
+        public_key (str): Multibase-encoded public key
+        private_key (str): Multibase-encoded private key (will be encrypted before storage)
+        repo_id (str, optional): Repository ID. If None, uses HF_REPO_ID from constants.
+    
+    Returns:
+        bool: True if keys were stored successfully, False otherwise
+    
+    Raises:
+        ValueError: If issuer_id, public_key, or private_key are empty
+        Exception: If repository operations fail
+    
+    Example:
+        >>> public_key = "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        >>> private_key = "z3u2MQhLnQw7nvJRGJCdKdqfXHV4N7BLKuEGFWnJqsVSdgYv"
+        >>> success = store_issuer_keypair("https://example.edu/issuers/565049", public_key, private_key)
+        >>> print(f"Keys stored: {success}")
+    """
+    if not issuer_id or not public_key or not private_key:
+        raise ValueError("issuer_id, public_key, and private_key are required")
+    
+    if not repo_id:
+        repo_id = HF_REPO_ID
+    
+    # Sanitize issuer_id for use as folder name
+    safe_issuer_id = issuer_id.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
+    
+    try:
+        # Encrypt the private key before storage
+        encrypted_private_key = _encrypt_private_key(private_key)
+        
+        # Prepare key data structures
+        private_key_data = {
+            "issuer_id": issuer_id,
+            "encrypted_private_key": encrypted_private_key,
+            "key_type": "Ed25519VerificationKey2020",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "encryption_method": "basic_xor"  # In production, use proper encryption
+        }
+        
+        public_key_data = {
+            "issuer_id": issuer_id,
+            "public_key": public_key,
+            "key_type": "Ed25519VerificationKey2020",
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Store private key
+        private_key_path = f"keys/issuers/{safe_issuer_id}/private_key.json"
+        private_key_success = _upload_json_to_repo(private_key_data, repo_id, private_key_path, "dataset")
+        
+        # Store public key
+        public_key_path = f"keys/issuers/{safe_issuer_id}/public_key.json"
+        public_key_success = _upload_json_to_repo(public_key_data, repo_id, public_key_path, "dataset")
+        
+        # Update global verification methods registry
+        if private_key_success and public_key_success:
+            _update_verification_methods_registry(issuer_id, safe_issuer_id, public_key, repo_id)
+        
+        return private_key_success and public_key_success
+        
+    except Exception as e:
+        print(f"Error storing issuer keypair for {issuer_id}: {e}")
+        return False
+
+def get_issuer_keypair(issuer_id: str, repo_id: str = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Retrieve stored cryptographic keys for an issuer from the private Hugging Face repository.
+    
+    **IMPORTANT: This function accesses a PRIVATE Hugging Face repository containing
+    encrypted private keys. Ensure proper access control and security measures.**
+    
+    Args:
+        issuer_id (str): Unique identifier for the issuer
+        repo_id (str, optional): Repository ID. If None, uses HF_REPO_ID from constants.
+    
+    Returns:
+        Tuple[Optional[str], Optional[str]]: (public_key, private_key) or (None, None) if not found
+        
+    Raises:
+        ValueError: If issuer_id is empty
+        Exception: If repository operations fail or decryption fails
+    
+    Example:
+        >>> public_key, private_key = get_issuer_keypair("https://example.edu/issuers/565049")
+        >>> if public_key and private_key:
+        ...     print("Keys retrieved successfully")
+        ... else:
+        ...     print("Keys not found")
+    """
+    if not issuer_id:
+        raise ValueError("issuer_id is required")
+    
+    if not repo_id:
+        repo_id = HF_REPO_ID
+    
+    # Sanitize issuer_id for use as folder name
+    safe_issuer_id = issuer_id.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
+    
+    try:
+        # Retrieve public key
+        public_key_path = f"keys/issuers/{safe_issuer_id}/public_key.json"
+        public_key_data = _get_json_from_repo(repo_id, public_key_path, "dataset")
+        
+        # Retrieve private key
+        private_key_path = f"keys/issuers/{safe_issuer_id}/private_key.json"
+        private_key_data = _get_json_from_repo(repo_id, private_key_path, "dataset")
+        
+        if not public_key_data or not private_key_data:
+            print(f"Keys not found for issuer {issuer_id}")
+            return None, None
+        
+        # Extract and decrypt private key
+        encrypted_private_key = private_key_data.get("encrypted_private_key")
+        if not encrypted_private_key:
+            print(f"No encrypted private key found for issuer {issuer_id}")
+            return None, None
+        
+        decrypted_private_key = _decrypt_private_key(encrypted_private_key)
+        public_key = public_key_data.get("public_key")
+        
+        return public_key, decrypted_private_key
+        
+    except Exception as e:
+        print(f"Error retrieving issuer keypair for {issuer_id}: {e}")
+        return None, None
+
+def _update_verification_methods_registry(issuer_id: str, safe_issuer_id: str, public_key: str, repo_id: str):
+    """
+    Update the global verification methods registry with new issuer public key.
+    
+    Args:
+        issuer_id (str): Original issuer ID
+        safe_issuer_id (str): Sanitized issuer ID for file system
+        public_key (str): Public key to register
+        repo_id (str): Repository ID
+    """
+    try:
+        registry_path = "keys/global/verification_methods.json"
+        registry_data = _get_json_from_repo(repo_id, registry_path, "dataset")
+        
+        if not registry_data:
+            registry_data = {"verification_methods": []}
+        
+        # Check if issuer already exists in registry
+        existing_entry = None
+        for i, method in enumerate(registry_data.get("verification_methods", [])):
+            if method.get("issuer_id") == issuer_id:
+                existing_entry = i
+                break
+        
+        # Create new verification method entry
+        verification_method = {
+            "issuer_id": issuer_id,
+            "safe_issuer_id": safe_issuer_id,
+            "public_key": public_key,
+            "key_type": "Ed25519VerificationKey2020",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        if existing_entry is not None:
+            # Update existing entry
+            registry_data["verification_methods"][existing_entry] = verification_method
+        else:
+            # Add new entry
+            registry_data["verification_methods"].append(verification_method)
+        
+        # Upload updated registry
+        _upload_json_to_repo(registry_data, repo_id, registry_path, "dataset")
+        
+    except Exception as e:
+        print(f"Error updating verification methods registry: {e}")
+
+def get_verification_methods_registry(repo_id: str = None) -> Dict[str, Any]:
+    """
+    Retrieve the global verification methods registry.
+    
+    Args:
+        repo_id (str, optional): Repository ID. If None, uses HF_REPO_ID from constants.
+    
+    Returns:
+        Dict[str, Any]: Registry data containing all verification methods
+    """
+    if not repo_id:
+        repo_id = HF_REPO_ID
+    
+    try:
+        registry_path = "keys/global/verification_methods.json"
+        registry_data = _get_json_from_repo(repo_id, registry_path, "dataset")
+        return registry_data if registry_data else {"verification_methods": []}
+    except Exception as e:
+        print(f"Error retrieving verification methods registry: {e}")
+        return {"verification_methods": []}
+
+def list_issuer_ids(repo_id: str = None) -> List[str]:
+    """
+    List all issuer IDs that have stored keys in the repository.
+    
+    Args:
+        repo_id (str, optional): Repository ID. If None, uses HF_REPO_ID from constants.
+    
+    Returns:
+        List[str]: List of issuer IDs
+    """
+    if not repo_id:
+        repo_id = HF_REPO_ID
+    
+    try:
+        registry = get_verification_methods_registry(repo_id)
+        return [method["issuer_id"] for method in registry.get("verification_methods", [])]
+    except Exception as e:
+        print(f"Error listing issuer IDs: {e}")
+        return []
