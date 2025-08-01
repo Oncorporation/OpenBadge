@@ -38,6 +38,7 @@ def load_env_vars(env_path):
 
 USE_FLASH_ATTENTION = os.getenv("USE_FLASH_ATTENTION", "0") == "1"
 HF_API_TOKEN = os.getenv("HF_TOKEN")
+CRYPTO_PK = os.getenv("CRYPTO_PK", None)
 if not HF_API_TOKEN:
     raise ValueError("HF_TOKEN is not set. Please check your .env file.")
 

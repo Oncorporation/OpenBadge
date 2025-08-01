@@ -1,3 +1,12 @@
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path when running as main
+if __name__ == "__main__":
+    parent_dir = Path(__file__).parent.parent
+    sys.path.insert(0, str(parent_dir))
+
 import nacl.signing
 import nacl.encoding
 import multibase
@@ -7,6 +16,17 @@ import hashlib
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 import secrets
+from modules.constants import IS_SHARED_SPACE, CRYPTO_PK
+
+# if CRYPTO_PK environmental variable is populated, use it as the private key.
+
+if CRYPTO_PK:
+    try:
+        # Decode the private key from multibase format
+        CRYPTO_PK = multibase.decode(CRYPTO_PK)
+    except Exception as e:
+        print("Unencoded CRYPTO_PK format")
+
 
 def generate_key_id(issuer_id: str, key_index: int = 1) -> str:
     """
