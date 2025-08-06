@@ -22,11 +22,28 @@ from modules.constants import IS_SHARED_SPACE, CRYPTO_PK
 
 if CRYPTO_PK:
     try:
-        # Decode the private key from multibase format
-        CRYPTO_PK = multibase.decode(CRYPTO_PK)
+        # Try to decode as multibase first
+        decoded_key = multibase.decode(CRYPTO_PK)
+        if len(decoded_key) != 32:
+            raise ValueError(f"Decoded key is {len(decoded_key)} bytes, expected 32")
+        CRYPTO_PK = decoded_key
     except Exception as e:
-        print("Unencoded CRYPTO_PK format")
-
+        print(f"CRYPTO_PK not in valid multibase format: {e}")
+        try:
+            # Try as hex string
+            if len(CRYPTO_PK) == 64:  # 32 bytes = 64 hex characters
+                CRYPTO_PK = bytes.fromhex(CRYPTO_PK)
+            else:
+                # Derive from arbitrary string using SHA-256
+                CRYPTO_PK = hashlib.sha256(CRYPTO_PK.encode('utf-8')).digest()
+            
+            # Verify final result
+            if len(CRYPTO_PK) != 32:
+                raise ValueError(f"Final key is {len(CRYPTO_PK)} bytes, expected 32")
+                
+        except Exception as final_error:
+            print(f"Could not process CRYPTO_PK: {final_error}")
+            CRYPTO_PK = None
 
 def generate_key_id(issuer_id: str, key_index: int = 1) -> str:
     """
@@ -75,6 +92,12 @@ def create_ed25519_keypair() -> Tuple[str, str]:
     private_key_multibase = multibase.encode('base58btc', private_key_bytes)
     public_key_multibase = multibase.encode('base58btc', public_key_bytes)
     
+    # Ensure we return strings, not bytes
+    if isinstance(private_key_multibase, bytes):
+        private_key_multibase = private_key_multibase.decode('utf-8')
+    if isinstance(public_key_multibase, bytes):
+        public_key_multibase = public_key_multibase.decode('utf-8')
+    
     return public_key_multibase, private_key_multibase
 
 def create_signature(data_hash: str, private_key_multibase: str) -> str:
@@ -116,6 +139,10 @@ def create_signature(data_hash: str, private_key_multibase: str) -> str:
     
     # Encode the signature in multibase format
     signature_multibase = multibase.encode('base58btc', signature_bytes)
+    
+    # Ensure we return a string, not bytes
+    if isinstance(signature_multibase, bytes):
+        signature_multibase = signature_multibase.decode('utf-8')
     
     return signature_multibase
 
@@ -235,7 +262,15 @@ def create_complete_signed_credential(
     """
     from modules.build_openbadge_metadata import build_openbadge_metadata, build_verification_method, build_proof_section
     
-    # Generate keypair if private key not provided
+    # Use CRYPTO_PK if no private key provided and CRYPTO_PK is available
+    if not private_key and CRYPTO_PK:
+        # CRYPTO_PK should be multibase encoded, but we decoded it earlier
+        # We need to re-encode it for the signing functions
+        private_key = multibase.encode('base58btc', CRYPTO_PK)
+        if isinstance(private_key, bytes):
+            private_key = private_key.decode('utf-8')
+    
+    # Generate keypair if still no private key available
     if not private_key:
         public_key, private_key = create_ed25519_keypair()
     else:
@@ -266,10 +301,10 @@ def create_complete_signed_credential(
     
     # Create proof hash
     data_hash = create_proof_hash(credential_data)
-    
+
     # Create cryptographic signature
     signature = create_signature(data_hash, private_key)
-    
+
     # Create proof section
     proof = build_proof_section(
         proof_type="Ed25519Signature2020",
@@ -319,6 +354,10 @@ def derive_public_key_from_private(private_key_multibase: str) -> str:
     # Convert to multibase format (base58btc encoding with 'z' prefix)
     public_key_multibase = multibase.encode('base58btc', public_key_bytes)
     
+    # Ensure we return a string, not bytes
+    if isinstance(public_key_multibase, bytes):
+        public_key_multibase = public_key_multibase.decode('utf-8')
+    
     return public_key_multibase
 
 # Example usage constants for testing
@@ -339,7 +378,7 @@ SAMPLE_ACHIEVEMENT = {
 }
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage - proof is automatically included
     credential = create_complete_signed_credential(
         credential_id="urn:uuid:12345678-1234-5678-1234-567812345678",
         subject_id="did:example:subject123",
@@ -348,3 +387,8 @@ if __name__ == "__main__":
         issuer_key_id=generate_key_id(SAMPLE_ISSUER["id"], 1)
     )
     print(json.dumps(credential, indent=2))
+    
+    # The credential will contain:
+    # - Standard Open Badge 3.0 fields
+    # - verificationMethod array with public key
+    # - proof section with Ed25519 signature

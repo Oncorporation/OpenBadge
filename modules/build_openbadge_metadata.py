@@ -36,7 +36,11 @@ def build_verification_method(
     if public_key_jwk:
         verification_method["publicKeyJwk"] = public_key_jwk
     elif public_key_multibase:
-        verification_method["publicKeyMultibase"] = public_key_multibase
+        # Ensure publicKeyMultibase is a string for JSON serialization
+        if isinstance(public_key_multibase, bytes):
+            verification_method["publicKeyMultibase"] = public_key_multibase.decode('utf-8')
+        else:
+            verification_method["publicKeyMultibase"] = public_key_multibase
     
     return verification_method
 
@@ -71,7 +75,11 @@ def build_proof_section(
     }
     
     if proof_value:
-        proof["proofValue"] = proof_value
+        # Ensure proofValue is a string for JSON serialization
+        if isinstance(proof_value, bytes):
+            proof["proofValue"] = proof_value.decode('utf-8')
+        else:
+            proof["proofValue"] = proof_value
     
     return proof
 
@@ -186,11 +194,19 @@ def build_openbadge_metadata(
     
     # Add verification method if provided
     if verification_method:
-        credential["verificationMethod"] = [verification_method]
+        # Ensure verification method is properly serializable
+        vm_copy = verification_method.copy()
+        if "publicKeyMultibase" in vm_copy and isinstance(vm_copy["publicKeyMultibase"], bytes):
+            vm_copy["publicKeyMultibase"] = vm_copy["publicKeyMultibase"].decode('utf-8')
+        credential["verificationMethod"] = [vm_copy]
     
     # Add proof if provided
     if proof:
-        credential["proof"] = proof
+        # Ensure proof is properly serializable
+        proof_copy = proof.copy()
+        if "proofValue" in proof_copy and isinstance(proof_copy["proofValue"], bytes):
+            proof_copy["proofValue"] = proof_copy["proofValue"].decode('utf-8')
+        credential["proof"] = proof_copy
 
     # Serialize to JSON-LD string
     return json.dumps(credential, indent=2)
