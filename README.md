@@ -41,6 +41,8 @@ A comprehensive Hugging Face Space for creating, signing, and verifying Open Bad
 - **🌐 REST API**: Comprehensive programmatic access to badge data and verification
 - **💾 Persistent Storage**: Secure storage in Hugging Face datasets with organized structure
 - **✅ Standards Compliance**: Full adherence to Open Badge 3.0 and W3C Verifiable Credentials specifications
+- **🎨 Dual Image Support**: Separate 512x512 badge images and credential certificates with automatic AI generation
+- **🖼️ AI Badge Generation**: Automatic generation of professional 512x512 badge images using MCP servers
 
 ## 🚀 Usage
 
@@ -72,7 +74,10 @@ proof = badge_data['metadata']['proof']
 
 - **Badge Lookup**: `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}`
 - **Metadata Only**: `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}/metadata`
-- **Badge Image**: `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}/image`
+- **Badge Images**: 
+  - `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}/image` (legacy - redirects to certificate)
+  - `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}/certificate` (credential certificate)
+  - `https://huggingface.co/spaces/surn/OpenBadge/badge/{guid}/badge-512` (512x512 badge image)
 
 ## 🔒 Open Badge 3.0 & Cryptographic Compliance
 
@@ -102,15 +107,20 @@ Badges and cryptographic keys are stored in a **PRIVATE** Hugging Face dataset r
 
 ⚠️ **WARNING**: The repository MUST be private to protect encrypted private keys.
 
+```
 badges/
 ├── {guid-1}/
 │   ├── user.json          # Complete badge metadata with cryptographic proof
-│   └── badge.png          # Badge image with embedded metadata
+│   ├── badge-512.png      # 512x512 badge image with embedded metadata
+│   └── badge.png          # Credential certificate image with embedded metadata
 ├── {guid-2}/
 │   ├── user.json          # Includes verification method and signature
-│   └── badge.png          # Self-contained verifiable credential
+│   ├── badge-512.png      # Small badge image for web display
+│   └── badge.png          # Large credential certificate
 └── ...
+```
 
+```
 keys/
 ├── issuers/
 │   ├── {issuer-id}/
@@ -121,12 +131,30 @@ keys/
 │       └── public_key.json
 └── global/
     └── verification_methods.json  # Registry of all verification methods
+```
+
+### Badge Image Types
+
+**512x512 Badge Image (`badge-512.png`)**
+- Small, square format (512x512 pixels)
+- Transparent background recommended
+- Used for display icons, social media, web embedding
+- Generated automatically with AI if requested
+- Optimized for web display and social sharing
+
+**Credential Certificate (`badge.png`)**  
+- Full-size certificate/credential image
+- Can be any dimensions (typically larger than 512x512)
+- Used for official documentation, printing, framing
+- Contains complete credential information
+- Traditional certificate/diploma format
 
 ### Key Storage Details
 - **Private keys**: Encrypted using basic XOR encryption (demo) - **use Fernet encryption in production**
 - **Public keys**: Stored in plain text for verification purposes
 - **Registry**: Global verification methods registry for efficient key discovery
 - **Issuer folders**: Sanitized issuer IDs as folder names for file system compatibility
+- **Badge images**: Both image types contain embedded Open Badge 3.0 metadata in PNG iTXt chunks
 
 ## ⚙️ Environment Setup
 
