@@ -477,7 +477,7 @@ class MCPImageGenerator:
         self,
         mcp_url: str,
         prompt: str,
-        image_input: str = "",
+        image_input:Optional[str] = None,
         width: int = 512,
         height: int = 512,
         hf_token: str = None,
@@ -498,6 +498,7 @@ class MCPImageGenerator:
                 "cfg_scale": kwargs.get("cfg_scale", 3.5),
                 "steps": kwargs.get("steps", 28),
                 "randomize_seed": kwargs.get("randomize_seed", True),
+                "selected_index": "155",
                 "seed": kwargs.get("seed", 662496688),
                 "width": width,
                 "height": height,
@@ -509,12 +510,7 @@ class MCPImageGenerator:
             # Try different possible tool names for FLUX LoRA DLC
             possible_tool_names = [
                 "FLUX_LoRA_DLC_run_lora",
-                "run_lora", 
-                "generate_image",
-                "flux_lora_dlc",
-                "predict",
-                "generate"
-                
+                "run_lora"
             ]
             
             for tool_name in possible_tool_names:
@@ -712,7 +708,7 @@ class MCPImageGenerator:
                 if result is not None:
                     # Try to extract PIL image from byte string responses first
                     pil_image = self._extract_image_from_mcp_result(result)
-                    if pil_image:
+                    if pil_image and isinstance(pil_image, Image.Image):
                         logger.info(f"Successfully converted MCP result to PIL image: {pil_image.size}")
                         return pil_image
                     
@@ -721,6 +717,10 @@ class MCPImageGenerator:
                         if "content" in result:
                             # Extract file path from content
                             for content_item in result["content"]:
+                                if content_item.get("type") == "text":
+                                    content_text = content_item.get("text")
+                                    image_path = content_text["url"] if isinstance(content_text, dict) else content_text
+                                    return image_path
                                 if content_item.get("type") == "image":
                                     image_path = content_item.get("data")
                                     if image_path and isinstance(image_path, str) and image_path.startswith(('/tmp/', './')):
@@ -1004,8 +1004,46 @@ class MCPImageGenerator:
                                         return pil_image
                                         
                             elif content_item.get("type") == "text":
-                                # Handle text responses that may contain image URLs
+                                # Handle text responses that may contain image URLs or structured data
                                 text_content = content_item.get("text", "")
+                                
+                                # Handle structured data in string format like "[{'image': {'url': '...'}}, ...]"
+                                if text_content.startswith("[") and "url" in text_content:
+                                    try:
+                                        # Parse the string as a Python literal (safely evaluate)
+                                        import ast
+                                        parsed_data = ast.literal_eval(text_content)
+                                        
+                                        # Extract URL from the nested structure
+                                        if isinstance(parsed_data, list) and len(parsed_data) > 0:
+                                            first_item = parsed_data[0]
+                                            if isinstance(first_item, dict) and 'image' in first_item:
+                                                image_info = first_item['image']
+                                                if isinstance(image_info, dict) and 'url' in image_info:
+                                                    image_path = image_info['url']
+                                                    logger.info(f"Successfully extracted URL from structured text: {image_path}")
+
+                                                    # Try to download and convert the image from URL
+                                                    try:
+                                                        import requests
+                                                        response = requests.get(image_path, timeout=30)
+                                                        response.raise_for_status()
+                                            
+                                                        # Convert downloaded bytes to PIL image
+                                                        pil_image = self._convert_bytes_to_pil_image(response.content)
+                                                        if pil_image:
+                                                            logger.info(f"Successfully downloaded and converted image from URL: {pil_image.size}")
+                                                            return pil_image
+                                                
+                                                    except Exception as url_error:
+                                                        logger.warning(f"Failed to download image from URL {image_path}: {url_error}")
+                                                    return image_path
+                                    
+                                    except (ValueError, SyntaxError, KeyError) as e:
+                                        logger.debug(f"Failed to parse structured text content as literal: {e}")
+                                        # Fall through to other text processing methods
+                                
+                                # Handle direct URL text content like "Image URL: https://..."
                                 if "Image URL:" in text_content:
                                     # Extract URL from text like "Image URL: https://..."
                                     try:
@@ -1040,6 +1078,12 @@ class MCPImageGenerator:
                                             
                                     except Exception as parse_error:
                                         logger.debug(f"Failed to parse image URL from text: {parse_error}")
+                                
+                                # Handle cases where text_content might be a dictionary-like string
+                                elif isinstance(text_content, dict) and "url" in text_content:
+                                    image_path = text_content["url"]
+                                    logger.info(f"Successfully got image URL from dict text content: {image_path}")
+                                    return image_path
                 
                 # Handle direct data field
                 elif "data" in result:
@@ -1129,6 +1173,33 @@ def generate_badge_image(
         **kwargs
     )
 
+def create_badge_prompt(
+    achievement_name: str,
+    recipient_name: str = "",
+    style: str = "professional",
+    colors: str = "gold, blue, white",
+    elements: str = "stars, ribbons, laurel wreaths"
+    ) -> str:
+    """
+    Convenience function to create an optimized prompt for badge generation.
+    Args:
+        achievement_name (str): Name of the achievement
+        recipient_name (str): Name of the recipient (optional)
+        style (str): Style of the badge (professional, modern, artistic, classic, superhero, retro)
+        colors (str): Color scheme
+        elements (str): Decorative elements to include
+    Returns:
+        str: Optimized prompt for badge generation
+    """
+    return mcp_generator.create_badge_prompt(
+        achievement_name=achievement_name,
+        recipient_name=recipient_name,
+        style=style,
+        colors=colors,
+        elements=elements
+    )
+
+
 def generate_badge_with_fallback(
     prompt: str,
     preferred_servers: list = None,
@@ -1154,6 +1225,28 @@ def generate_badge_with_fallback(
         hf_token=hf_token,
         **kwargs
     )
+
+def test_mcp_servers(hf_token: str = None) -> Dict[str, bool]:
+    """
+    Test connections to all available MCP servers.
+    
+    Args:
+        hf_token (str, optional): Hugging Face access token for authentication
+        
+    Returns:
+        Dict[str, bool]: Dictionary mapping server keys to connection status
+    """
+    connection_results = {}
+    
+    for server_key in mcp_generator.servers.keys():
+        try:
+            is_connected = mcp_generator.test_mcp_connection(server_key, hf_token)
+            connection_results[server_key] = is_connected
+        except Exception as e:
+            logger.error(f"Error testing {server_key}: {e}")
+            connection_results[server_key] = False
+    
+    return connection_results
 
 # Example usage and testing
 if __name__ == "__main__":
@@ -1183,98 +1276,53 @@ if __name__ == "__main__":
                 if schema and "properties" in schema:
                     params = list(schema["properties"].keys())[:5]  # Show first 5 params
                     print(f"  {tool_name}: {params}...")
-    
-    # Test byte string to PIL conversion
-    print("\nTesting byte string to PIL image conversion...")
-    try:
-        # Create a simple test byte string (1x1 red PNG)
-        test_png_bytes = base64.b64decode(
-            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
-        )
-        
-        # Test the conversion function
-        test_image = generator._convert_bytes_to_pil_image(test_png_bytes, "png")
-        if test_image:
-            print(f"✅ Byte string conversion successful: {test_image.size} {test_image.mode}")
-        else:
-            print("❌ Byte string conversion failed")
-            
-        # Test with base64 string
-        test_b64_string = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='
-        test_image_b64 = generator._convert_bytes_to_pil_image(test_b64_string, "png")
-        if test_image_b64:
-            print(f"✅ Base64 string conversion successful: {test_image_b64.size} {test_image_b64.mode}")
-        else:
-            print("❌ Base64 string conversion failed")
-            
-        # Test MCP result extraction with the example format from the user
-        mock_mcp_result = {
-            "content": [
-                {
-                    "type": "image",
-                    "data": test_b64_string,
-                    "mimeType": "image/png"
-                },
-                {
-                    "type": "text", 
-                    "text": "Test image generated"
-                }
-            ]
-        }
-        
-        extracted_image = generator._extract_image_from_mcp_result(mock_mcp_result)
-        if extracted_image:
-            print(f"✅ MCP result extraction successful: {extracted_image.size} {extracted_image.mode}")
-        else:
-            print("❌ MCP result extraction failed")
-            
-        # Test with WebP format simulation (the user's example format)
-        print("\n🔧 Testing WebP byte string handling (user's example format)...")
-        
-        # Simulate the user's example response format
-        user_example_result = {
-            "content": [
-                {
-                    "type": "image",
-                    "data": test_b64_string,  # Using PNG as WebP test data for simplicity
-                    "mimeType": "image/webp"
-                },
-                {
-                    "type": "text",
-                    "text": "Image URL: https://evalstate-flux1-schnell.hf.space/gradio_api/file=/tmp/gradio/b326d97d9eee9df5f809259dc8534837c29dbbbf5dbc3a3b62d0519049410037/image.webp"
-                },
-                {
-                    "type": "text",
-                    "text": "826594543"
-                }
-            ],
-            "isError": False
-        }
-        
-        webp_extracted_image = generator._extract_image_from_mcp_result(user_example_result)
-        if webp_extracted_image:
-            print(f"✅ WebP format extraction successful: {webp_extracted_image.size} {webp_extracted_image.mode}")
-        else:
-            print("❌ WebP format extraction failed")
-            
-    except Exception as e:
-        print(f"❌ Error testing byte string conversion: {e}")
-    
-    # Create a badge prompt
-    prompt = create_badge_prompt(
+
+    # Create a shared test prompt
+    prompt = generator.create_badge_prompt(
         achievement_name="Open Badge MCP Certification",
         recipient_name="Surn",
         style="professional"
     )
     print(f"\nGenerated prompt: {prompt}")
     
-    # Generate badge with MCP fallback and authentication
-    # Uncomment to test with real MCP servers
+    # Test generate_badge_with_fallback separately for each of the three preferred servers
+    print("\n🔬 Testing generate_badge_with_fallback individually for each server:")
+    
+    preferred_servers = ["flux_lora_dlc", "flux_schnell", "qwen_image_diffusion"]
+    
+    for server_key in preferred_servers:
+        print(f"\n--- Testing {server_key.upper()} ---")
+        try:
+            result = generate_badge_with_fallback(
+                prompt=prompt,
+                preferred_servers=[server_key],  # Test only this single server
+                hf_token=HF_API_TOKEN,
+                use_negative_prompt=True,
+                negative_prompt=badge_negative_prompt,
+                num_images=1
+            )
+            
+            if result:
+                if isinstance(result, str):
+                    print(f"✅ {server_key} generated badge successfully (file path): {result}")
+                elif hasattr(result, 'size'):
+                    print(f"✅ {server_key} generated badge successfully (PIL image): {result.size} {result.mode}")
+                    result.show()
+                else:
+                    print(f"✅ {server_key} generated badge successfully: {type(result)}")
+            else:
+                print(f"❌ {server_key} failed to generate badge")
+                
+        except Exception as e:
+            print(f"❌ Error testing {server_key}: {e}")
+    
+    # Test with all servers in fallback mode
+    # print(f"\n--- Testing Full Fallback Chain ---")
     # try:
     #     result = generate_badge_with_fallback(
     #         prompt=prompt,
-    #         preferred_servers=["flux_schnell", "qwen_image_diffusion"],
-    #         hf_token=HF_API_TOKEN,  # Use authentication to avoid quota issues
+    #         preferred_servers=preferred_servers,
+    #         hf_token=HF_API_TOKEN,
     #         use_negative_prompt=True,
     #         negative_prompt=badge_negative_prompt,
     #         num_images=1
@@ -1282,53 +1330,24 @@ if __name__ == "__main__":
         
     #     if result:
     #         if isinstance(result, str):
-    #             print(f"✅ Badge generated successfully via MCP (file path): {result}")
+    #             print(f"✅ Full fallback chain generated badge successfully (file path): {result}")
     #         elif hasattr(result, 'size'):
-    #             print(f"✅ Badge generated successfully via MCP (PIL image): {result.size} {result.mode}")
+    #             print(f"✅ Full fallback chain generated badge successfully (PIL image): {result.size} {result.mode}")
     #         else:
-    #             print(f"✅ Badge generated successfully via MCP: {type(result)}")
+    #             print(f"✅ Full fallback chain generated badge successfully: {type(result)}")
     #     else:
-    #         print("❌ Badge generation failed on all MCP servers")
+    #         print("❌ All servers in fallback chain failed to generate badge")
+            
     # except Exception as e:
-    #    print(f"❌ Error during MCP badge generation: {e}")
+    #     print(f"❌ Error testing full fallback chain: {e}")
     
+    # Authentication status
     print(f"\n🔑 Authentication Status:")
     try:
         if HF_API_TOKEN:
             print("✅ HF_TOKEN is available for authenticated requests")
-            print("   This should help avoid ZeroGPU quota exceeded errors")
         else:
             print("❌ HF_TOKEN not found - may encounter quota limitations")
     except Exception as e:
         print(f"❌ Error checking HF_TOKEN: {e}")
-        
-    print(f"\n🔧 Function Return Types & MCP Response Support:")
-    print("✅ generate_badge_with_fallback returns Union[str, Image.Image]")
-    print("   - File path strings: When MCP servers return file paths")
-    print("   - PIL Image objects: When MCP servers return byte strings (converted automatically)")
-    print("   - PIL Image objects: When MCP servers return URLs (downloaded automatically)")
-    print("✅ Byte string responses are automatically converted to PIL Images")
-    print("✅ Image URL responses are automatically downloaded and converted")
-    print("✅ Support for WebP, PNG, JPEG formats with proper transparency handling")
-    print("✅ Handles the exact response format from the user's example:")
-    print('   {"content": [{"type": "image", "data": "byte_string", "mimeType": "image/webp"}]}')
-    print("✅ Handles MCP server URL responses:")
-    print('   {"content": [{"type": "text", "text": "Image URL: https://...gradio_api/file/.../image.webp"}]}')
-    print("✅ Backward compatibility maintained with app.py usage patterns")
-    print("✅ Both return types properly handled in generate_badge_image_with_mcp()")
-    
-    print(f"\n📁 File Path vs PIL Image vs URL Handling:")
-    print("   - If MCP server returns file paths → Returns string file path")
-    print("   - If MCP server returns byte strings → Converts to PIL Image and returns Image object")
-    print("   - If MCP server returns URLs in text → Downloads and converts to PIL Image")
-    print("   - App handles all cases seamlessly in generate_badge_image_with_mcp()")
-    print("   - Preserves transparency and proper image formatting for all cases")
-    print("   - Smart priority: byte string data > URL download > file path")
-    
-    print(f"\n🌐 MCP Server URL Format Support:")
-    print("   ✅ Gradio API file URLs: https://space.hf.space/gradio_api/file=/tmp/gradio/.../image.webp")
-    print("   ✅ Direct image URLs: https://example.com/image.png")
-    print("   ✅ URL parsing from text responses with 'Image URL:' prefix")
-    print("   ✅ Automatic file extension detection and format handling")
-    print("   ✅ HTTP timeout and error handling for reliable downloads")
 

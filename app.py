@@ -35,11 +35,6 @@ try:
 except ImportError:
     print("MCP client not available - badge auto-generation will be disabled")
     MCP_AVAILABLE = False
-    # Create dummy functions so the code doesn't break
-    def generate_badge_with_fallback(*args, **kwargs):
-        return None
-    def create_badge_prompt(*args, **kwargs):
-        return ""
 
 # Create FastAPI app
 app = FastAPI()
