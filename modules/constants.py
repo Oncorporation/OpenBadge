@@ -79,6 +79,7 @@ upload_file_types = model_extensions_list + image_extensions_list + audio_extens
 #umg_mcp_server = "https://surn-unlimitedmusicgen.hf.space/gradio_api/mcp/sse"
 #umg_mcp_server = "http://127.0.0.1:7860/gradio_api/mcp/sse"
 badge_negative_prompt = "low quality, blurry, copyright, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, missing_transparent_background"
+default_badge = "assets/openbadge.png"
 
 # Badge style templates for prompt generation
 def get_style_templates():

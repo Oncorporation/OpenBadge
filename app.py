@@ -9,18 +9,27 @@ from datetime import datetime
 from modules.build_openbadge_metadata import build_openbadge_metadata
 from modules.add_openbadge_metadata import add_openbadge_metadata
 from modules.storage import upload_files_to_repo, _get_json_from_repo, _upload_json_to_repo, _get_files_from_repo
-from modules.constants import HF_REPO_ID, HF_API_TOKEN, SPACE_NAME, TMPDIR, STYLE_TEMPLATES
+from modules.constants import HF_REPO_ID, HF_API_TOKEN, SPACE_NAME, TMPDIR, STYLE_TEMPLATES, default_badge, CRYPTO_PK
+from modules.mcp_client import generate_badge_with_fallback, create_badge_prompt, create_complete_signed_credential, generate_key_id, verify_credential_proof
 from modules.version_info import versions_html
 from modules.file_utils import download_and_save_image
+from modules.image_utils import shrink_and_paste_on_blank
 from PIL import Image
 import io
 import base64
 import shutil
 from pathlib import Path
 
+# Import crypto utilities for badge signing when CRYPTO_PK is available
+try:    
+    CRYPTO_AVAILABLE = True
+    print("Crypto utilities available for badge signing and verification")
+except ImportError:
+    print("Crypto utilities not available - badges will be created without cryptographic proof")
+    CRYPTO_AVAILABLE = False
+
 # Import MCP function for badge generation
-try:
-    from modules.mcp_client import generate_badge_with_fallback, create_badge_prompt
+try:    
     MCP_AVAILABLE = True
     print("MCP client for badge generation is available")
 except ImportError:
@@ -178,26 +187,110 @@ class BadgeManager:
             "criteria": {"narrative": criteria_narrative}
         }
         
-        # Build Open Badge metadata
+        # Check if cryptographic signing is available and enabled
+        use_crypto = CRYPTO_PK is not None and CRYPTO_AVAILABLE
+        
         current_time = datetime.utcnow().isoformat() + "Z"
-        badge_metadata = build_openbadge_metadata(
-            credential_id=f"urn:uuid:{badge_guid}",
-            subject_id=f"mailto:{recipient_email}" if recipient_email else f"did:example:{badge_guid}",
-            issuer=issuer,
-            valid_from=current_time,
-            achievement=achievement,
-            name=f"{achievement_name} for {recipient_name}",
-            description=f"Badge awarded to {recipient_name}"
-        )
+        
+        if use_crypto:
+            # Use cryptographic signing to create signed credential with proof
+            print("🔐 Creating cryptographically signed badge with proof section")
+            try:
+                # Generate issuer key ID for verification method
+                issuer_key_id = generate_key_id(issuer["id"], 1)
+                
+                # Create complete signed credential with proof
+                signed_credential = create_complete_signed_credential(
+                    credential_id=f"urn:uuid:{badge_guid}",
+                    subject_id=f"mailto:{recipient_email}" if recipient_email else f"did:example:{badge_guid}",
+                    issuer=issuer,
+                    achievement=achievement,
+                    issuer_key_id=issuer_key_id,
+                    valid_from=current_time,
+                    name=f"{achievement_name} for {recipient_name}",
+                    description=f"Badge awarded to {recipient_name}"
+                )
+                
+                # Convert signed credential back to JSON string for compatibility
+                badge_metadata = json.dumps(signed_credential, indent=2)
+                
+                print(f"✅ Badge signed with verification method: {issuer_key_id}")
+                
+            except Exception as crypto_error:
+                print(f"❌ Cryptographic signing failed: {crypto_error}")
+                print("📝 Falling back to unsigned badge creation")
+                use_crypto = False
+        
+        if not use_crypto:
+            # Create standard badge without cryptographic proof
+            print("📝 Creating standard badge without cryptographic proof")
+            badge_metadata = build_openbadge_metadata(
+                credential_id=f"urn:uuid:{badge_guid}",
+                subject_id=f"mailto:{recipient_email}" if recipient_email else f"did:example:{badge_guid}",
+                issuer=issuer,
+                valid_from=current_time,
+                achievement=achievement,
+                name=f"{achievement_name} for {recipient_name}",
+                description=f"Badge awarded to {recipient_name}"
+            )
         
         # Auto-generate badge image if requested and no badge image provided
         if auto_generate_badge and badge_image is None:
             try:
                 generated_image = self.generate_badge_image_with_mcp(achievement_name, recipient_name, badge_style)
                 if generated_image:
-                    badge_image = generated_image
+                    # Place the generated badge image on a 512x512 transparent canvas using image_utils
+                    if hasattr(generated_image, 'resize'):
+                        # Calculate margin to center the badge with some spacing
+                        margin = 8  # 8 pixel margin on each side
+                        target_size = 512 - (2 * margin)
+                        
+                        # Resize the generated image to fit within the canvas with margin
+                        if generated_image.size != (target_size, target_size):
+                            generated_image = generated_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+                        
+                        # Ensure it's RGBA for transparency
+                        if generated_image.mode != 'RGBA':
+                            generated_image = generated_image.convert('RGBA')
+                        
+                        # Create the final badge image with proper centering on 512x512 canvas
+                        badge_image = shrink_and_paste_on_blank(
+                            current_image=generated_image,
+                            mask_width=margin,
+                            mask_height=margin
+                        )
+                    else:
+                        badge_image = generated_image
             except Exception as e:
                 print(f"Failed to auto-generate badge image: {e}")
+        elif badge_image is None:
+            # If no badge image provided and not auto-generating, use default
+            print("No badge image provided and auto-generation not requested. Using default.")
+            try:
+                # Load default badge and place it on a 512x512 canvas
+                default_image = Image.open(default_badge)
+                
+                # Calculate margin to center the badge
+                margin = 8  # 8 pixel margin
+                target_size = 512 - (2 * margin)
+                
+                # Resize default image to fit within the target area
+                if default_image.size != (target_size, target_size):
+                    default_image = default_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+                
+                # Ensure it's RGBA for transparency
+                if default_image.mode != 'RGBA':
+                    default_image = default_image.convert('RGBA')
+                
+                # Create the final badge image with proper centering on 512x512 canvas
+                badge_image = shrink_and_paste_on_blank(
+                    current_image=default_image,
+                    mask_width=margin,
+                    mask_height=margin
+                )
+            except Exception as e:
+                print(f"Error loading default badge image: {e}")
+                badge_image = None
         
         # Save metadata as JSON file
         badge_folder = f"{BADGES_FOLDER}/{badge_guid}"
@@ -222,17 +315,32 @@ class BadgeManager:
                     badge_512_path = f.name
                     temp_files.append(badge_512_path)
                 
-                # Save the badge image as 512x512
+                # Save the badge image as 512x512 using shrink_and_paste_on_blank for proper canvas sizing
                 if hasattr(badge_image, 'save'):
-                    # Resize to 512x512 for badge
-                    if hasattr(badge_image, 'resize'):
-                        badge_image_512 = badge_image.resize((512, 512), Image.Resampling.LANCZOS)
+                    # Ensure the badge image is properly placed on a 512x512 transparent canvas
+                    if badge_image.size != (512, 512):
+                        # If the image is not 512x512, we need to resize and center it
+                        margin = 8  # 8 pixel margin for aesthetic spacing
+                        target_size = 512 - (2 * margin)
+                        
+                        # Resize the badge to fit within the target area
+                        badge_resized = badge_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+                        
+                        # Ensure the image is in RGBA mode to preserve transparency
+                        if badge_resized.mode != 'RGBA':
+                            badge_resized = badge_resized.convert('RGBA')
+                        
+                        # Use shrink_and_paste_on_blank to center the badge on a 512x512 transparent canvas
+                        badge_image_512 = shrink_and_paste_on_blank(
+                            current_image=badge_resized,
+                            mask_width=margin,
+                            mask_height=margin
+                        )
                     else:
+                        # Badge is already 512x512, just ensure proper format
                         badge_image_512 = badge_image
-                    
-                    # Ensure the image is in RGBA mode to preserve transparency
-                    if badge_image_512.mode != 'RGBA':
-                        badge_image_512 = badge_image_512.convert('RGBA')
+                        if badge_image_512.mode != 'RGBA':
+                            badge_image_512 = badge_image_512.convert('RGBA')
                     
                     # Save with transparency preserved
                     badge_image_512.save(badge_512_path, 'PNG', optimize=True)
@@ -343,7 +451,8 @@ class BadgeManager:
             "badge_guid": badge_guid,
             "badge_url": f"https://huggingface.co/spaces/{SPACE_NAME}/badge/{badge_guid}",
             "metadata": json.loads(badge_metadata),
-            "upload_result": upload_result
+            "upload_result": upload_result,
+            "cryptographically_signed": use_crypto  # Add flag to indicate if badge was signed
         }
 
     def get_badge_img(self, badge_guid, image_type="certificate"):
@@ -510,11 +619,18 @@ def create_new_badge(recipient_name, recipient_email, achievement_name,
             badge_style=badge_style
         )
         
+        # Check if badge was cryptographically signed
+        crypto_status = "🔐 **Cryptographically Signed:** Yes" if result.get('cryptographically_signed', False) else "📝 **Cryptographically Signed:** No"
+        crypto_note = "\n**Note:** Badge includes verification method and cryptographic proof for enhanced security." if result.get('cryptographically_signed', False) else "\n**Note:** Badge created without cryptographic proof. Set CRYPTO_PK environment variable to enable signing."
+        
         success_msg = f"""
 ✅ Badge created successfully!
 
 **Badge GUID:** {result['badge_guid']}
 **Badge URL:** {result['badge_url']}
+{crypto_status}
+
+{crypto_note}
 
 You can now access this badge at the URL above or look it up using the GUID.
         """
@@ -527,11 +643,32 @@ You can now access this badge at the URL above or look it up using the GUID.
 def lookup_badge_by_guid(guid):
     """Gradio function to look up a badge by GUID"""
     if not guid.strip():
-        return "Please enter a badge GUID", "", None, None, None
+        return "Please enter a badge GUID", "", None, None, None, ""
         
     badge_data = badge_manager.get_badge(guid.strip())
     if not badge_data:
-        return "❌ Badge not found. Please check the GUID and try again.", "", None, None, None
+        return "❌ Badge not found. Please check the GUID and try again.", "", None, None, None, ""
+    
+    # Check if the badge has a proof section and verify it
+    verification_status = ""
+    metadata = badge_data['metadata']
+    
+    if isinstance(metadata, dict):
+        if "proof" in metadata and "verificationMethod" in metadata:
+            if CRYPTO_AVAILABLE:
+                print("🔍 Verifying cryptographic proof...")
+                is_valid, status_message = verify_credential_proof(metadata)
+                verification_status = f"🔐 **Cryptographic Verification:**\n{status_message}"
+            else:
+                verification_status = "🔐 **Cryptographic Verification:**\n⚠️ Proof section found but verification unavailable (crypto utilities not loaded)"
+        elif "proof" in metadata:
+            verification_status = "🔐 **Cryptographic Verification:**\n⚠️ Proof found but verification method missing"
+        elif "verificationMethod" in metadata:
+            verification_status = "🔐 **Cryptographic Verification:**\n📝 Verification method found but no proof section (unsigned credential)"
+        else:
+            verification_status = "🔐 **Cryptographic Verification:**\n📝 No cryptographic proof found (unsigned credential)"
+    else:
+        verification_status = "🔐 **Cryptographic Verification:**\n❌ Unable to parse badge metadata"
     
     info_msg = f"""
 ✅ Badge found!
@@ -559,7 +696,7 @@ def lookup_badge_by_guid(guid):
     except Exception as e:
         print(f"Could not download credential certificate: {e}")
     
-    return info_msg, badge_data['lookup_url'], badge_data['metadata'], badge_512_path, certificate_path
+    return info_msg, badge_data['lookup_url'], badge_data['metadata'], badge_512_path, certificate_path, verification_status
 
 gr.set_static_paths(paths=["fonts/","assets/","images/"])
 # Create Gradio Interface og theme = gr.themes.Soft()
@@ -571,6 +708,12 @@ with gr.Blocks(title="OpenBadge Creator & Lookup", theme="Surn/Beeuty", css_path
         # Badge Creation Tab
         with gr.TabItem("Create Badge"):
             gr.Markdown("## Create a New Open Badge")
+            
+            # Display cryptographic signing status
+            if CRYPTO_PK is not None and CRYPTO_AVAILABLE:
+                gr.Markdown("🔐 **Cryptographic Signing: ENABLED** - All badges will include verification methods and cryptographic proofs for enhanced security and verification.")
+            else:
+                gr.Markdown("📝 **Cryptographic Signing: DISABLED** - Badges will be created without cryptographic proofs. Set the CRYPTO_PK environment variable to enable cryptographic signing.")
             
             with gr.Row():
                 with gr.Column():
@@ -663,6 +806,14 @@ with gr.Blocks(title="OpenBadge Creator & Lookup", theme="Surn/Beeuty", css_path
             with gr.Row():
                 with gr.Column():
                     lookup_metadata = gr.JSON(label="Badge Metadata")
+                    # Add verification status display
+                    verification_status_display = gr.Textbox(
+                        label="Cryptographic Verification Status",
+                        lines=6,
+                        max_lines=10,
+                        interactive=False,
+                        placeholder="Verification status will appear here after looking up a badge..."
+                    )
                 with gr.Column():
                     with gr.Row():
                         with gr.Column():
@@ -683,7 +834,7 @@ with gr.Blocks(title="OpenBadge Creator & Lookup", theme="Surn/Beeuty", css_path
             lookup_btn.click(
                 fn=lookup_badge_by_guid,
                 inputs=[lookup_guid],
-                outputs=[lookup_result, badge_url_display, lookup_metadata, badge_512_display, certificate_display]
+                outputs=[lookup_result, badge_url_display, lookup_metadata, badge_512_display, certificate_display, verification_status_display]
             )
         
         # Badge Generation Tab
@@ -799,7 +950,27 @@ certificate_response = requests.get("https://huggingface.co/spaces/{SPACE_NAME}/
 ```json
 {{
   "badge_guid": "uuid-here",
-  "metadata": {{...}},
+  "metadata": {{
+    "@context": [...],
+    "id": "urn:uuid:...",
+    "type": ["VerifiableCredential", "OpenBadgeCredential"],
+    "issuer": {{...}},
+    "validFrom": "...",
+    "credentialSubject": {{...}},
+    "verificationMethod": [{{
+      "id": "issuer-url#key-1",
+      "type": "Ed25519VerificationKey2020", 
+      "controller": "issuer-url",
+      "publicKeyMultibase": "z6Mk..."
+    }}],
+    "proof": {{
+      "type": "Ed25519Signature2020",
+      "created": "2025-01-15T10:30:00Z",
+      "verificationMethod": "issuer-url#key-1",
+      "proofPurpose": "assertionMethod",
+      "proofValue": "z5TvdR..."
+    }}
+  }},
   "json_url": "https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/badges/{{guid}}/user.json",
   "badge_512_url": "https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/badges/{{guid}}/badge-512.png",
   "certificate_url": "https://huggingface.co/datasets/{HF_REPO_ID}/resolve/main/badges/{{guid}}/badge.png",
@@ -807,49 +978,30 @@ certificate_response = requests.get("https://huggingface.co/spaces/{SPACE_NAME}/
 }}
 ```
 
-### Storage Location
+### Cryptographic Verification
 
-Badges are stored in the Hugging Face dataset: `{HF_REPO_ID}`
+When the `CRYPTO_PK` environment variable is set, badges are created with:
+- **Verification Method**: Ed25519 public key for signature verification
+- **Cryptographic Proof**: Ed25519 digital signature ensuring badge authenticity
+- **Data Integrity**: SHA-256 hashing with canonical JSON serialization
 
-**Updated Badge folder structure:**
-```
-badges/{{guid}}/
-├── user.json          # Complete badge metadata with cryptographic proof
-├── badge-512.png      # 512x512 badge image with embedded metadata
-└── badge.png          # Credential certificate image with embedded metadata
-```
+**Verification Process:**
+1. Extract the `verificationMethod` and `proof` from badge metadata
+2. Recreate the canonical data hash (same process used during signing)
+3. Verify the signature using the public key and proof value
+4. Display comprehensive verification status in the lookup interface
 
-**File Descriptions:**
-- `user.json`: Open Badge 3.0 compliant JSON-LD metadata
-- `badge-512.png`: Small 512x512 badge image (transparent background recommended)  
-- `badge.png`: Large credential certificate image (any size)
-- Both PNG files contain embedded Open Badge metadata in iTXt chunks
+**Verification Statuses:**
+- **✅ Verified**: Signature is valid, credential is authentic
+- **❌ Invalid**: Signature verification failed, credential may be tampered
+- **⚠️ Missing**: Proof or verification method components are missing
+- **📝 Unsigned**: Credential has no cryptographic proof (standard badge)
 
-### MCP Servers for Badge Generation
-
-**Recommended MCP-enabled Spaces for generating 512x512 illustration-style badge images:**
-
-1. **FLUX LoRA DLC** (`prithivMLmods/FLUX-LoRA-DLC`)
-   - Multiple artistic styles and LoRAs for illustration badges
-   - Excellent for creative 512x512 badge designs
-
-2. **FLUX Schnell** (`evalstate/FLUX1-Schnell`) 
-   - Fast, professional, realistic illustration badge generation
-   - High-quality 512x512 outputs with quick generation
-
-3. **Qwen Image Diffusion** (`prithivMLmods/Qwen-Image-Diffusion`)
-   - Advanced MCP protocol support
-   - Easy integration for 512x512 illustration badge generation
-
-**Badge Specifications:**
-- **512x512 Badge**: 512x512 pixels, illustration style, transparent background
-- **Credential Certificate**: Any dimensions, typically larger format for official use
-- **Format**: PNG with transparency support and transparent background
-- **Background**: Transparent (no solid background color) for flexible placement
-- **Text**: Achievement name and recipient name clearly integrated
-- **Elements**: Professional borders, decorative flourishes, appropriate color schemes
-- **Available Styles**: {', '.join(list(STYLE_TEMPLATES.keys()))}
-- **Compatibility**: Both images contain Open Badge 3.0 metadata for verification
+**Security Features:**
+- Ed25519 elliptic curve signatures for high security
+- Multibase encoding for keys and signatures
+- Tamper detection through signature validation
+- Full compliance with W3C Verifiable Credentials standards
             """)
     with gr.Row():
         gr.HTML(versions_html(), elem_id="versions", elem_classes="version-info")

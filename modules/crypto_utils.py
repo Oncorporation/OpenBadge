@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 from pathlib import Path
 
@@ -359,6 +359,135 @@ def derive_public_key_from_private(private_key_multibase: str) -> str:
         public_key_multibase = public_key_multibase.decode('utf-8')
     
     return public_key_multibase
+
+def verify_signature(data_hash: str, signature_multibase: str, public_key_multibase: str) -> bool:
+    """
+    Verify an Ed25519 digital signature using the provided public key.
+    
+    Takes a SHA-256 hash of credential data and verifies the signature using the provided
+    Ed25519 public key, returning True if the signature is valid.
+    
+    Args:
+        data_hash (str): Base64-encoded SHA-256 hash of the credential data
+        signature_multibase (str): Multibase-encoded (base58btc) Ed25519 signature
+        public_key_multibase (str): Multibase-encoded (base58btc) Ed25519 public key
+    
+    Returns:
+        bool: True if signature is valid, False otherwise
+    
+    Raises:
+        ValueError: If any key/signature format is invalid
+        nacl.exceptions.CryptoError: If verification fails due to cryptographic error
+    
+    Example:
+        >>> data_hash = "SGVsbG8gV29ybGQ="  # Base64 encoded data
+        >>> signature = "z5TvdRmYr8U5..."  # Multibase encoded signature
+        >>> public_key = "z6MkhaXgBZDv..."  # Multibase encoded public key
+        >>> is_valid = verify_signature(data_hash, signature, public_key)
+        >>> isinstance(is_valid, bool)
+        True
+    """
+    try:
+        # Decode the public key from multibase format
+        public_key_bytes = multibase.decode(public_key_multibase)
+        
+        # Decode the signature from multibase format
+        signature_bytes = multibase.decode(signature_multibase)
+        
+        # Create verify key from the public key
+        verify_key = nacl.signing.VerifyKey(public_key_bytes, encoder=nacl.encoding.RawEncoder)
+        
+        # Decode the hash from base64
+        hash_bytes = base64.b64decode(data_hash)
+        
+        # Verify the signature
+        verify_key.verify(hash_bytes, signature_bytes, encoder=nacl.encoding.RawEncoder)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Signature verification failed: {e}")
+        return False
+
+def verify_credential_proof(credential_data: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Verify the cryptographic proof of an Open Badge 3.0 credential.
+    
+    This function extracts the proof and verification method from a credential,
+    recreates the data hash, and verifies the signature.
+    
+    Args:
+        credential_data (Dict[str, Any]): The credential data dictionary with proof
+    
+    Returns:
+        Tuple[bool, str]: A tuple containing (is_valid, status_message)
+            - is_valid: True if the proof is valid, False otherwise
+            - status_message: Detailed message about verification status
+    
+    Example:
+        >>> credential = {...}  # Credential with proof section
+        >>> is_valid, message = verify_credential_proof(credential)
+        >>> print(f"Valid: {is_valid}, Message: {message}")
+    """
+    try:
+        # Check if credential has proof section
+        if "proof" not in credential_data:
+            return False, "❌ No proof section found in credential"
+        
+        # Check if credential has verification method
+        if "verificationMethod" not in credential_data:
+            return False, "❌ No verification method found in credential"
+        
+        proof = credential_data["proof"]
+        verification_methods = credential_data["verificationMethod"]
+        
+        # Validate proof structure
+        required_proof_fields = ["type", "verificationMethod", "proofValue"]
+        missing_fields = [field for field in required_proof_fields if field not in proof]
+        if missing_fields:
+            return False, f"❌ Proof missing required fields: {missing_fields}"
+        
+        # Find the verification method referenced in proof
+        proof_vm_id = proof["verificationMethod"]
+        verification_method = None
+        
+        for vm in verification_methods:
+            if vm.get("id") == proof_vm_id:
+                verification_method = vm
+                break
+        
+        if not verification_method:
+            return False, f"❌ Verification method {proof_vm_id} not found in credential"
+        
+        # Validate verification method structure
+        if "publicKeyMultibase" not in verification_method:
+            return False, "❌ Verification method missing public key"
+        
+        # Extract signature and public key
+        signature = proof["proofValue"]
+        public_key = verification_method["publicKeyMultibase"]
+        
+        # Create proof hash (same process as signing)
+        data_hash = create_proof_hash(credential_data)
+        
+        # Verify the signature
+        is_valid = verify_signature(data_hash, signature, public_key)
+        
+        if is_valid:
+            vm_type = verification_method.get("type", "Unknown")
+            proof_type = proof.get("type", "Unknown")
+            created = proof.get("created", "Unknown")
+            
+            return True, f"✅ Signature verified successfully\n" \
+                        f"   - Proof Type: {proof_type}\n" \
+                        f"   - Verification Method: {vm_type}\n" \
+                        f"   - Created: {created}\n" \
+                        f"   - Issuer: {verification_method.get('controller', 'Unknown')}"
+        else:
+            return False, "❌ Signature verification failed - credential may be tampered with"
+            
+    except Exception as e:
+        return False, f"❌ Error during proof verification: {str(e)}"
 
 # Example usage constants for testing
 SAMPLE_ISSUER = {

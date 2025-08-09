@@ -78,6 +78,51 @@ Tests the byte string to PIL image conversion functionality for MCP servers:
 python tests/test_byte_string_fix.py
 ```
 
+### 7. Image Utils Integration Test (`test_image_utils_integration.py`)
+Tests the image_utils.py integration for proper badge canvas creation:
+- Verifies shrink_and_paste_on_blank function works correctly
+- Tests 512x512 transparent canvas creation
+- Validates image centering with specified margins
+- Confirms RGBA format preservation for transparency
+- Tests different input image sizes and scenarios
+- Validates badge-specific scenarios (448x448 content + 32px margins)
+- Ensures proper PNG file saving functionality
+
+**Run the test:**
+```bash
+python tests/test_image_utils_integration.py
+```
+
+### 8. Cryptographic Integration Test (`test_cryptographic_integration.py`)
+Tests the cryptographic signing integration for badge creation:
+- Verifies CRYPTO_PK environment variable detection
+- Tests crypto utilities import and availability
+- Validates complete signed credential creation
+- Confirms verification method and proof structure
+- Tests fallback to standard badge creation
+- Ensures proper integration with app.py badge creation workflow
+- Validates Ed25519 signature generation and verification method inclusion
+
+**Run the test:**
+```bash
+python tests/test_cryptographic_integration.py
+```
+
+### 9. Proof Verification Test (`test_proof_verification.py`)
+Tests the cryptographic proof verification functionality for badge lookup:
+- Verifies proof verification functions work correctly
+- Tests signature validation with Ed25519 keys
+- Validates detection of tampered credentials
+- Confirms proper handling of unsigned badges
+- Tests missing proof and verification method scenarios
+- Ensures comprehensive verification status messages
+- Validates integration with badge lookup workflow
+
+**Run the test:**
+```bash
+python tests/test_proof_verification.py
+```
+
 ## Running All Tests
 
 To run all tests from the project root directory:
@@ -100,6 +145,15 @@ python tests/test_app_style_integration.py
 
 # Run byte string conversion test
 python tests/test_byte_string_fix.py
+
+# Run image utils integration test
+python tests/test_image_utils_integration.py
+
+# Run cryptographic integration test
+python tests/test_cryptographic_integration.py
+
+# Run proof verification test
+python tests/test_proof_verification.py
 ```
 
 ## Test Structure
